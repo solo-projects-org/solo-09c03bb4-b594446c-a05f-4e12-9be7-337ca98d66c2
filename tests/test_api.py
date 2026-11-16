@@ -18,9 +18,14 @@ from app.main import app  # noqa: E402
 
 @pytest.fixture(scope="module")
 def client():
+    # 锁定本模块自己的数据库，避免与其它测试模块的 db.DB_PATH 互相覆盖
+    db.DB_PATH = os.environ["APP_DB_PATH"]
     db.init_db()
     # 每个模块使用全新数据库
     conn = db.connect()
+    conn.execute("DELETE FROM delivery_impacts")
+    conn.execute("DELETE FROM delivery_items")
+    conn.execute("DELETE FROM deliveries")
     conn.execute("DELETE FROM exclusions")
     conn.execute("DELETE FROM results")
     conn.execute("DELETE FROM mappings")

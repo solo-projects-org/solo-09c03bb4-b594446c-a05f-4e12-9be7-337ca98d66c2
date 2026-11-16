@@ -114,7 +114,51 @@
   </section>
 
   <section class="card">
-    <h2>③ 修改映射（基于当前版本的两份原始文件重算）</h2>
+    <h2>③ 交付登记（把所见版本交给分析组）</h2>
+    <p class="hint">登记的是当前所见版本的纳入结果。同版重试沿用交付号；过期版本不能新登记。
+      之后每次上传新文件或重算映射，系统都会核对该交付原先纳入的样品，变化记入交付详情并标记“需追回”。</p>
+    <div class="row-flex">
+      <input id="deliveryNote" placeholder="交付备注（可选，如批次/接收人）" style="max-width:420px">
+      <button class="primary" onclick="registerDelivery()">登记当前版本为交付</button>
+      <button onclick="loadDeliveries()">刷新交付列表</button>
+    </div>
+    <div class="tablewrap" style="margin-top:10px">
+      <table id="tblDeliveries">
+        <thead><tr><th>交付号</th><th>版本</th><th>登记时间</th><th>状态</th>
+          <th>交付样品数</th><th>未恢复影响</th><th>操作</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card" id="deliveryDetailCard" style="display:none">
+    <h2>④ 交付详情与追回记录</h2>
+    <div id="deliverySummary" class="stats"></div>
+    <h2 style="margin-top:14px">交付行（交付时的冻结快照）</h2>
+    <div class="tablewrap">
+      <table id="tblDeliveryItems">
+        <thead><tr><th>样品号</th><th>均值</th><th>甲换算值</th><th>乙换算值</th>
+          <th>甲原行号</th><th>乙原行号</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <h2 style="margin-top:16px">影响记录（首次受影响时的旧/新行；恢复后保留）</h2>
+    <div class="tablewrap">
+      <table id="tblDeliveryImpacts">
+        <thead><tr><th>样品号</th><th>类型</th><th>首次受影响版本</th>
+          <th>旧均值</th><th>旧甲换算值</th><th>旧乙换算值</th><th>旧甲行号</th><th>旧乙行号</th>
+          <th>新均值</th><th>新甲换算值</th><th>新乙换算值</th><th>新甲行号</th><th>新乙行号</th>
+          <th>恢复版本</th><th>恢复后均值</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="row-flex" style="margin-top:12px">
+      <button onclick="downloadDelivery()">按交付号下载当时的 CSV</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>⑤ 修改映射（基于当前版本的两份原始文件重算）</h2>
     <p class="hint">仅修改列名/系数时无需重新上传；若要替换文件，请回到 ① 重新上传两份 CSV 提交。
       提交携带当前版本号，旧版本号提交将报冲突并保留现有可用结果。</p>
     <div class="grid">
@@ -139,6 +183,8 @@
 
 <script>
 let state = null;
+let deliveries = [];
+let selectedDelivery = null;
 const previews = { A: null, B: null };
 
 function showAlert(msg, ok) {
@@ -217,11 +263,13 @@ async function callAndRender(url, opts) {
     if (r.status === 409) {
       showAlert('版本冲突：' + d.detail + '。页面已刷新为最新版本，请核对后重试。', false);
       await loadState();
+      await loadDeliveries();
       return;
     }
     if (!r.ok) throw new Error(d.detail || '请求失败');
     state = d;
     render(d);
+    await loadDeliveries();
     showAlert(`已切换到版本 v${d.version}（纳入 ${d.stats.matched}，拒收 ${d.stats.excluded}）`, true);
   } catch (e) { showAlert(e.message, false); }
 }
@@ -272,6 +320,110 @@ function downloadCsv() {
   window.location = '/api/download?version=' + state.version;
 }
 
+async function loadDeliveries() {
+  try {
+    const r = await fetch('/api/deliveries');
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || '交付列表加载失败');
+    deliveries = d.deliveries || [];
+    renderDeliveries();
+    if (selectedDelivery != null) await loadDeliveryDetail(selectedDelivery, true);
+  } catch (e) { showAlert(e.message, false); }
+}
+
+function statusBadge(status) {
+  return status === 'needs_recall'
+    ? '<span class="badge" style="background:#ffebe9;color:#cf222e">需追回</span>'
+    : '<span class="badge" style="background:#dafbe1;color:#1a7f37">有效</span>';
+}
+
+function renderDeliveries() {
+  const tbody = document.querySelector('#tblDeliveries tbody');
+  tbody.innerHTML = deliveries.map(d => {
+    const versionTag = (state && d.version_id === state.version) ? '（当前）' : '';
+    return `<tr>
+      <td>#${d.id}</td>
+      <td>v${d.version_id}${versionTag}</td>
+      <td>${esc(d.created_at)}</td>
+      <td>${statusBadge(d.status)}</td>
+      <td>${d.item_count}</td>
+      <td>${d.open_impacts}</td>
+      <td><button onclick="loadDeliveryDetail(${d.id})">查看详情</button></td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="7" class="muted">尚无交付登记</td></tr>';
+}
+
+async function registerDelivery() {
+  if (!state || state.version == null)
+    return showAlert('尚无当前版本可登记交付', false);
+  const fd = new FormData();
+  fd.append('version', state.version);
+  fd.append('expected_version', state.version);
+  const note = document.getElementById('deliveryNote').value.trim();
+  if (note) fd.append('note', note);
+  try {
+    const r = await fetch('/api/deliveries', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || '交付登记失败');
+    await loadDeliveries();
+    await loadDeliveryDetail(d.delivery.id);
+    showAlert(`已登记交付 #${d.delivery.id}（版本 v${d.delivery.version}）`, true);
+  } catch (e) { showAlert(e.message, false); }
+}
+
+async function loadDeliveryDetail(id, quiet) {
+  try {
+    const r = await fetch('/api/deliveries/' + id);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || '交付详情加载失败');
+    selectedDelivery = id;
+    renderDeliveryDetail(d);
+    if (!quiet) document.getElementById('deliveryDetailCard')
+      .scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) { showAlert(e.message, false); }
+}
+
+function renderDeliveryDetail(d) {
+  const card = document.getElementById('deliveryDetailCard');
+  card.style.display = '';
+  const open = (d.impacts || []).filter(x => x.resolved_version == null).length;
+  document.getElementById('deliverySummary').innerHTML =
+    `<div>交付号：<b>#${d.delivery.id}</b></div>
+     <div>对应版本：<b>v${d.delivery.version}</b></div>
+     <div>状态：${statusBadge(d.delivery.status)}</div>
+     <div>交付样品：<b>${(d.items || []).length}</b></div>
+     <div>未恢复影响：<b>${open}</b></div>
+     <div>备注：<span class="muted">${esc(d.delivery.note || '—')}</span></div>`;
+  document.querySelector('#tblDeliveryItems tbody').innerHTML =
+    (d.items || []).map(i =>
+      `<tr><td>${esc(i.sample_id)}</td><td class="mono">${esc(i.mean)}</td>
+       <td class="mono">${esc(i.value_a)}</td><td class="mono">${esc(i.value_b)}</td>
+       <td>${esc(i.row_a)}</td><td>${esc(i.row_b)}</td></tr>`).join('')
+    || '<tr><td colspan="6" class="muted">该交付没有纳入样品</td></tr>';
+  document.querySelector('#tblDeliveryImpacts tbody').innerHTML =
+    (d.impacts || []).map(x => {
+      const kind = x.kind === 'removed'
+        ? '<span class="reason">不再纳入</span>'
+        : '<span class="reason">行内容变化</span>';
+      const stateTag = x.resolved_version == null
+        ? '<span class="reason">待追回</span>'
+        : `已恢复（v${x.resolved_version}）`;
+      return `<tr><td>${esc(x.sample_id)}</td><td>${kind}</td><td>v${x.first_version}</td>
+        <td class="mono">${esc(x.old_mean)}</td><td class="mono">${esc(x.old_value_a)}</td>
+        <td class="mono">${esc(x.old_value_b)}</td><td>${esc(x.old_row_a)}</td><td>${esc(x.old_row_b)}</td>
+        <td class="mono">${esc(x.new_mean ?? '—')}</td><td class="mono">${esc(x.new_value_a ?? '—')}</td>
+        <td class="mono">${esc(x.new_value_b ?? '—')}</td><td>${esc(x.new_row_a ?? '—')}</td>
+        <td>${esc(x.new_row_b ?? '—')}</td><td>${stateTag}</td>
+        <td class="mono">${esc(x.resolved_mean ?? '—')}</td></tr>`;
+    }).join('') || '<tr><td colspan="15" class="muted">该交付没有受影响样品</td></tr>';
+}
+
+function downloadDelivery() {
+  if (selectedDelivery == null) return showAlert('请先选择交付', false);
+  // 按交付号下载交付当时的冻结 CSV，与后续版本无关
+  window.location = '/api/deliveries/' + selectedDelivery + '/download';
+}
+
 async function loadState() {
   const r = await fetch('/api/state');
   const d = await r.json();
@@ -279,6 +431,7 @@ async function loadState() {
   render(d);
 }
 loadState();
+loadDeliveries();
 </script>
 </body>
 </html>

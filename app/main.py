@@ -278,6 +278,26 @@ def remap(req: RemapRequest) -> dict:
         conn.close()
 
 
+def _write_results_csv(rows: list[dict]) -> Response:
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "样品号", "铅含量均值(mg/kg)",
+        "甲换算值(mg/kg)", "乙换算值(mg/kg)",
+        "甲原行号", "乙原行号",
+    ])
+    for r in rows:
+        writer.writerow([
+            r["sample_id"], r["mean"], r["value_a"], r["value_b"],
+            r["row_a"], r["row_b"],
+        ])
+    # utf-8-sig：带 BOM，Excel 直接打开不乱码
+    return Response(
+        content=b"\xef\xbb\xbf" + buf.getvalue().encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+    )
+
+
 @app.get("/api/download")
 def download(version: Optional[int] = None) -> Response:
     """按指定版本（默认当前版本）导出其快照 CSV，下载内容不跨版本混用。"""
@@ -291,29 +311,77 @@ def download(version: Optional[int] = None) -> Response:
         if s is None:
             raise HTTPException(status_code=404, detail=f"版本 v{target} 不存在")
 
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        writer.writerow([
-            "样品号", "铅含量均值(mg/kg)",
-            "甲换算值(mg/kg)", "乙换算值(mg/kg)",
-            "甲原行号", "乙原行号",
-        ])
-        for r in s["results"]:
-            writer.writerow([
-                r["sample_id"], r["mean"], r["value_a"], r["value_b"],
-                r["row_a"], r["row_b"],
-            ])
-        # utf-8-sig：带 BOM，Excel 直接打开不乱码
-        payload = b"\xef\xbb\xbf" + buf.getvalue().encode("utf-8")
-        return Response(
-            content=payload,
-            media_type="text/csv; charset=utf-8",
-            headers={
-                "Content-Disposition": (
-                    f'attachment; filename="lead_results_v{target}.csv"'
-                )
-            },
+        resp = _write_results_csv(s["results"])
+        resp.headers["Content-Disposition"] = (
+            f'attachment; filename="lead_results_v{target}.csv"'
         )
+        return resp
+    finally:
+        conn.close()
+
+
+@app.post("/api/deliveries")
+def create_delivery(
+    version: int = Form(...),
+    expected_version: Optional[str] = Form(None),
+    note: Optional[str] = Form(None),
+) -> dict:
+    """登记“所见版本的交付”。同版重试沿用交付号；过期版本不能新登记。"""
+    expected = _parse_expected(expected_version)
+    conn = db.connect()
+    try:
+        db.begin_immediate(conn)
+        try:
+            delivery_id = db.register_delivery(conn, version, expected, note)
+            db.commit(conn)
+        except db.VersionNotFoundError as exc:
+            db.rollback(conn)
+            raise HTTPException(status_code=404, detail=str(exc))
+        except db.StaleDeliveryVersionError as exc:
+            db.rollback(conn)
+            raise HTTPException(status_code=409, detail=str(exc))
+        except Exception:
+            db.rollback(conn)
+            raise
+        return db.get_delivery(conn, delivery_id)
+    finally:
+        conn.close()
+
+
+@app.get("/api/deliveries")
+def deliveries() -> dict:
+    conn = db.connect()
+    try:
+        return {"deliveries": db.list_deliveries(conn)}
+    finally:
+        conn.close()
+
+
+@app.get("/api/deliveries/{delivery_id}")
+def delivery_detail(delivery_id: int) -> dict:
+    conn = db.connect()
+    try:
+        d = db.get_delivery(conn, delivery_id)
+        if d is None:
+            raise HTTPException(status_code=404, detail=f"交付 {delivery_id} 不存在")
+        return d
+    finally:
+        conn.close()
+
+
+@app.get("/api/deliveries/{delivery_id}/download")
+def delivery_download(delivery_id: int) -> Response:
+    """按交付号下载交付当时冻结的 CSV（不受后续版本影响）。"""
+    conn = db.connect()
+    try:
+        d = db.get_delivery(conn, delivery_id)
+        if d is None:
+            raise HTTPException(status_code=404, detail=f"交付 {delivery_id} 不存在")
+        resp = _write_results_csv(d["items"])
+        resp.headers["Content-Disposition"] = (
+            f'attachment; filename="lead_delivery_{delivery_id}_v{d["delivery"]["version"]}.csv"'
+        )
+        return resp
     finally:
         conn.close()
 

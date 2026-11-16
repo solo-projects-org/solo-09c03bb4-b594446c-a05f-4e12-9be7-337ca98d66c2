@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>铅含量双实验室比对系统</title>
+<style>
+  :root { --border:#d0d7de; --bg:#f6f8fa; --blue:#0969da; --red:#cf222e; --green:#1a7f37; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: "PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+         color:#1f2328; background:var(--bg); }
+  header { background:#24292f; color:#fff; padding:14px 24px; display:flex;
+           justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
+  header h1 { font-size:18px; margin:0; font-weight:600; }
+  main { max-width:1180px; margin:20px auto; padding:0 16px; }
+  .card { background:#fff; border:1px solid var(--border); border-radius:8px;
+          padding:16px 20px; margin-bottom:18px; }
+  .card h2 { font-size:15px; margin:0 0 12px; padding-bottom:8px; border-bottom:1px solid var(--border); }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:860px){ .grid{ grid-template-columns:1fr; } }
+  label { display:block; font-size:13px; font-weight:600; margin:10px 0 4px; }
+  input, select { width:100%; padding:7px 9px; border:1px solid var(--border);
+                  border-radius:6px; font-size:13px; background:#fff; }
+  button { padding:8px 18px; border-radius:6px; border:1px solid var(--border);
+           background:#f3f4f6; cursor:pointer; font-size:14px; font-weight:600; }
+  button.primary { background:var(--blue); color:#fff; border-color:var(--blue); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .hint { font-size:12px; color:#656d76; margin-top:4px; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:20px; font-size:12px;
+           font-weight:600; background:#ddf4ff; color:#0969da; }
+  .badge.none { background:#f6f8fa; color:#656d76; }
+  table { width:100%; border-collapse:collapse; font-size:13px; margin-top:8px; }
+  th, td { border:1px solid var(--border); padding:6px 10px; text-align:left; }
+  th { background:var(--bg); font-weight:600; white-space:nowrap; }
+  .tablewrap { overflow-x:auto; max-height:420px; overflow-y:auto; }
+  .alert { padding:10px 14px; border-radius:6px; margin-bottom:14px; font-size:13px;
+           display:none; white-space:pre-wrap; }
+  .alert.err { display:block; background:#ffebe9; border:1px solid #ff8182; color:var(--red); }
+  .alert.ok  { display:block; background:#dafbe1; border:1px solid #4ac26b; color:var(--green); }
+  .stats { display:flex; gap:24px; margin:8px 0 4px; font-size:13px; }
+  .stats b { font-size:16px; }
+  .reason { color:var(--red); }
+  .row-flex { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .filemeta { font-size:12px; color:#656d76; margin-top:6px; }
+  .muted { color:#656d76; }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+</style>
+</head>
+<body>
+<header>
+  <h1>铅含量双实验室比对系统</h1>
+  <div>当前版本：<span id="curVer" class="badge none">无</span></div>
+</header>
+<main>
+  <div id="alert" class="alert"></div>
+
+  <section class="card">
+    <h2>① 上传两份 CSV 并配置列映射（各最多 500 数据行）</h2>
+    <div class="grid">
+      <div>
+        <strong>甲实验室（A）</strong>
+        <input type="file" id="fileA" accept=".csv,text/csv">
+        <div class="row-flex" style="margin-top:8px">
+          <button type="button" onclick="preview('A')">解析表头</button>
+          <span id="metaA" class="filemeta"></span>
+        </div>
+        <label>样品号列</label><select id="sampleColA"></select>
+        <label>测值列</label><select id="valueColA"></select>
+        <label>换算为 mg/kg 的系数（换算值 = 测值 × 系数）</label>
+        <input id="coefA" value="1" inputmode="decimal">
+      </div>
+      <div>
+        <strong>乙实验室（B）</strong>
+        <input type="file" id="fileB" accept=".csv,text/csv">
+        <div class="row-flex" style="margin-top:8px">
+          <button type="button" onclick="preview('B')">解析表头</button>
+          <span id="metaB" class="filemeta"></span>
+        </div>
+        <label>样品号列</label><select id="sampleColB"></select>
+        <label>测值列</label><select id="valueColB"></select>
+        <label>换算为 mg/kg 的系数（换算值 = 测值 × 系数）</label>
+        <input id="coefB" value="1" inputmode="decimal">
+      </div>
+    </div>
+    <div class="row-flex" style="margin-top:14px">
+      <button class="primary" onclick="submitAll()">提交并整体切换当前结果</button>
+      <span class="hint">同一文件内样品号重复将整份拒收；任何校验失败都不会影响当前可用版本。</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>② 当前版本结果</h2>
+    <div class="stats">
+      <div>纳入均值样品：<b id="cntMatch">0</b></div>
+      <div>拒收/缺报样品：<b id="cntExcl">0</b></div>
+      <div><button onclick="downloadCsv()">下载统一结果 CSV（带原行号）</button></div>
+    </div>
+    <h2 style="margin-top:14px">纳入结果</h2>
+    <div class="tablewrap">
+      <table id="tblMatch">
+        <thead><tr><th>样品号</th><th>均值 (mg/kg)</th><th>甲换算值</th><th>乙换算值</th>
+          <th>甲原行号</th><th>乙原行号</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <h2 style="margin-top:16px">缺报 / 超差明细（含原因）</h2>
+    <div class="tablewrap">
+      <table id="tblExcl">
+        <thead><tr><th>样品号</th><th>原因</th><th>甲换算值</th><th>乙换算值</th>
+          <th>甲原行号</th><th>乙原行号</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>③ 修改映射（基于当前版本的两份原始文件重算）</h2>
+    <p class="hint">仅修改列名/系数时无需重新上传；若要替换文件，请回到 ① 重新上传两份 CSV 提交。
+      提交携带当前版本号，旧版本号提交将报冲突并保留现有可用结果。</p>
+    <div class="grid">
+      <div>
+        <strong>甲实验室（A）</strong>
+        <label>样品号列</label><select id="rSampleA"></select>
+        <label>测值列</label><select id="rValueA"></select>
+        <label>系数</label><input id="rCoefA" inputmode="decimal">
+      </div>
+      <div>
+        <strong>乙实验室（B）</strong>
+        <label>样品号列</label><select id="rSampleB"></select>
+        <label>测值列</label><select id="rValueB"></select>
+        <label>系数</label><input id="rCoefB" inputmode="decimal">
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <button class="primary" onclick="remap()">重算并切换版本</button>
+    </div>
+  </section>
+</main>
+
+<script>
+let state = null;
+const previews = { A: null, B: null };
+
+function showAlert(msg, ok) {
+  const el = document.getElementById('alert');
+  el.textContent = msg;
+  el.className = 'alert ' + (ok ? 'ok' : 'err');
+  if (ok) setTimeout(() => { el.className = 'alert'; }, 4000);
+}
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function fillSelect(sel, headers) {
+  sel.innerHTML = headers.map(h => `<option value="${esc(h)}">${esc(h)}</option>`).join('');
+}
+
+async function preview(lab) {
+  const input = document.getElementById('file' + lab);
+  if (!input.files.length) return showAlert('请先选择 ' + lab + ' 实验室的 CSV 文件', false);
+  const fd = new FormData();
+  fd.append('file', input.files[0]);
+  try {
+    const r = await fetch('/api/preview', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || '解析失败');
+    previews[lab] = d;
+    fillSelect(document.getElementById('sampleCol' + lab), d.headers);
+    fillSelect(document.getElementById('valueCol' + lab), d.headers);
+    if (d.headers.length > 1) document.getElementById('valueCol' + lab).selectedIndex = 1;
+    document.getElementById('meta' + lab).textContent =
+      `${d.filename}｜${d.headers.length} 列｜${d.data_rows} 数据行` +
+      (d.over_limit ? `｜超过 ${d.max_rows} 行上限` : '');
+  } catch (e) { showAlert(e.message, false); }
+}
+
+async function submitAll() {
+  if (!previews.A || !previews.B)
+    return showAlert('请先分别选择并解析两份 CSV 文件', false);
+  const fd = new FormData();
+  fd.append('file_a', document.getElementById('fileA').files[0]);
+  fd.append('file_b', document.getElementById('fileB').files[0]);
+  fd.append('sample_col_a', document.getElementById('sampleColA').value);
+  fd.append('value_col_a', document.getElementById('valueColA').value);
+  fd.append('coefficient_a', document.getElementById('coefA').value);
+  fd.append('sample_col_b', document.getElementById('sampleColB').value);
+  fd.append('value_col_b', document.getElementById('valueColB').value);
+  fd.append('coefficient_b', document.getElementById('coefB').value);
+  if (state && state.version != null) fd.append('expected_version', state.version);
+  await callAndRender('/api/submit', { method: 'POST', body: fd });
+}
+
+async function remap() {
+  if (!state || state.version == null)
+    return showAlert('尚无当前版本，请先上传提交', false);
+  const body = {
+    expected_version: state.version,
+    mappings: [
+      { lab: 'A', sample_column: document.getElementById('rSampleA').value,
+        value_column: document.getElementById('rValueA').value,
+        coefficient: document.getElementById('rCoefA').value },
+      { lab: 'B', sample_column: document.getElementById('rSampleB').value,
+        value_column: document.getElementById('rValueB').value,
+        coefficient: document.getElementById('rCoefB').value },
+    ],
+  };
+  await callAndRender('/api/remap', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+async function callAndRender(url, opts) {
+  try {
+    const r = await fetch(url, opts);
+    const d = await r.json();
+    if (r.status === 409) {
+      showAlert('版本冲突：' + d.detail + '。页面已刷新为最新版本，请核对后重试。', false);
+      await loadState();
+      return;
+    }
+    if (!r.ok) throw new Error(d.detail || '请求失败');
+    state = d;
+    render(d);
+    showAlert(`已切换到版本 v${d.version}（纳入 ${d.stats.matched}，拒收 ${d.stats.excluded}）`, true);
+  } catch (e) { showAlert(e.message, false); }
+}
+
+function render(d) {
+  const badge = document.getElementById('curVer');
+  if (d.version == null) {
+    badge.textContent = '无'; badge.className = 'badge none';
+  } else {
+    badge.textContent = 'v' + d.version + (d.is_current ? '' : '（非当前）');
+    badge.className = 'badge';
+  }
+  document.getElementById('cntMatch').textContent = d.stats.matched;
+  document.getElementById('cntExcl').textContent = d.stats.excluded;
+  document.querySelector('#tblMatch tbody').innerHTML = d.results.map(r =>
+    `<tr><td>${esc(r.sample_id)}</td><td class="mono">${esc(r.mean)}</td>
+     <td class="mono">${esc(r.value_a)}</td><td class="mono">${esc(r.value_b)}</td>
+     <td>${esc(r.row_a)}</td><td>${esc(r.row_b)}</td></tr>`).join('')
+    || '<tr><td colspan="6" class="muted">暂无纳入样品</td></tr>';
+  document.querySelector('#tblExcl tbody').innerHTML = d.exclusions.map(x =>
+    `<tr><td>${esc(x.sample_id)}</td><td class="reason">${esc(x.reason)}</td>
+     <td class="mono">${esc(x.value_a ?? '—')}</td><td class="mono">${esc(x.value_b ?? '—')}</td>
+     <td>${esc(x.row_a ?? '—')}</td><td>${esc(x.row_b ?? '—')}</td></tr>`).join('')
+    || '<tr><td colspan="6" class="muted">无拒收明细</td></tr>';
+
+  // 预填重算表单：优先取当前版本的文件表头与映射
+  const headersByLab = {};
+  (d.files || []).forEach(f => { headersByLab[f.lab] = f.headers; });
+  const mapByLab = {};
+  (d.mappings || []).forEach(m => { mapByLab[m.lab] = m; });
+  for (const lab of ['A', 'B']) {
+    const headers = headersByLab[lab] || (previews[lab] && previews[lab].headers) || [];
+    fillSelect(document.getElementById('rSample' + lab), headers);
+    fillSelect(document.getElementById('rValue' + lab), headers);
+    const m = mapByLab[lab];
+    if (m) {
+      document.getElementById('rSample' + lab).value = m.sample_column;
+      document.getElementById('rValue' + lab).value = m.value_column;
+      document.getElementById('rCoef' + lab).value = m.coefficient;
+    }
+  }
+}
+
+function downloadCsv() {
+  if (!state || state.version == null)
+    return showAlert('尚无结果可下载', false);
+  // 显式携带所见版本号，保证下载内容与页面展示属于同一版本
+  window.location = '/api/download?version=' + state.version;
+}
+
+async function loadState() {
+  const r = await fetch('/api/state');
+  const d = await r.json();
+  state = d;
+  render(d);
+}
+loadState();
+</script>
+</body>
+</html>
